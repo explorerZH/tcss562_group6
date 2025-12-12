@@ -1,0 +1,26 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowRdsDataExecute",
+      "Effect": "Allow",
+      "Action": [
+        "rds-data:ExecuteStatement",
+        "rds-data:BatchExecuteStatement"
+      ],
+      "Resource": [
+        "arn:aws:rds:us-east-2:095235023728:cluster:term-project-1"
+      ]
+    },
+    {
+      "Sid": "AllowSecretsAccess",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:us-east-2:095235023728:secret:AIrbnbDataDB-B7VhGZ"
+      ]
+    }
+  ]
+}

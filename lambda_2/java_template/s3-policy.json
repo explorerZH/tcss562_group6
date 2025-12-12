@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect":"Allow",
+      "Action":[
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource":[
+        "arn:aws:s3:::test.bucket.462562f25.aaa",
+        "arn:aws:s3:::test.bucket.462562f25.aaa/*",
+        "arn:aws:s3:::airbnb-clean-data-han",
+        "arn:aws:s3:::airbnb-clean-data-han/*"
+      ]
+    }
+  ]
+}
