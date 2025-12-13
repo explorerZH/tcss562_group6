@@ -66,11 +66,31 @@ public class AuroraBulkLoader {
             String dbSecretArn,
             String database,
             String table) {
-        executeLoadFromS3(s3Bucket, s3Key, region, dbResourceArn, dbSecretArn, database, table);
+        executeLoadFromS3(s3Bucket, s3Key, region, dbResourceArn, dbSecretArn, database, table, false);
+    }
+
+    /**
+     * Trigger a server-side LOAD DATA FROM S3 with optional target table pruning.
+     * 
+     * @param pruneTargetTable if true, deletes all rows from the target table
+     *                         before inserting
+     */
+    public static void loadS3ToAurora(String s3Bucket,
+            String s3Key,
+            Region region,
+            String dbResourceArn,
+            String dbSecretArn,
+            String database,
+            String table,
+            boolean pruneTargetTable) {
+        executeLoadFromS3(s3Bucket, s3Key, region, dbResourceArn, dbSecretArn, database, table, pruneTargetTable);
     }
 
     /**
      * Execute the LOAD DATA FROM S3 SQL statement against Aurora via the Data API.
+     * 
+     * @param pruneTargetTable if true, deletes all rows from the target table
+     *                         before inserting
      */
     public static void executeLoadFromS3(String s3Bucket,
             String s3Key,
@@ -78,7 +98,8 @@ public class AuroraBulkLoader {
             String dbResourceArn,
             String dbSecretArn,
             String database,
-            String table) {
+            String table,
+            boolean pruneTargetTable) {
         // Instead of loading directly into the typed production table (which can
         // fail on malformed rows), load into a staging table with all TEXT
         // columns. After verifying/cleaning the staging table you can INSERT
@@ -221,6 +242,19 @@ public class AuroraBulkLoader {
                     stagingCount = Long.parseLong(countStagingResp.records().get(0).get(0).stringValue());
                 } catch (Exception ex) {
                     System.out.println("Warning: couldn't parse staging count: " + ex.getMessage());
+                }
+
+                // Optional: prune (delete all rows from) the target table before inserting
+                if (pruneTargetTable) {
+                    String pruneTargetSql = "DELETE FROM " + table + ";";
+                    ExecuteStatementResponse pruneTargetResp = rds.executeStatement(ExecuteStatementRequest.builder()
+                            .resourceArn(dbResourceArn)
+                            .secretArn(dbSecretArn)
+                            .database(database)
+                            .sql(pruneTargetSql)
+                            .transactionId(txId)
+                            .build());
+                    System.out.println("Prune target table " + table + " response: " + pruneTargetResp);
                 }
 
                 // Insert-clean SQL: convert common numeric/text fields safely while
@@ -450,6 +484,20 @@ public class AuroraBulkLoader {
      */
     public static void loadS3ToSqlite(String s3Bucket, String s3Key, Region region, String sqlitePath,
             String sqliteTable) throws Exception {
+        loadS3ToSqlite(s3Bucket, s3Key, region, sqlitePath, sqliteTable, false);
+    }
+
+    /**
+     * Download the CSV from S3 and load it into a local SQLite database for
+     * benchmarking.
+     * sqlitePath can be a file path (e.g. `/tmp/saaf.db`) and sqliteTable the table
+     * name.
+     * 
+     * @param pruneTable if true, deletes all rows from the SQLite table before
+     *                   inserting
+     */
+    public static void loadS3ToSqlite(String s3Bucket, String s3Key, Region region, String sqlitePath,
+            String sqliteTable, boolean pruneTable) throws Exception {
         long startMs = System.currentTimeMillis();
         long downloadStartMs = System.currentTimeMillis();
         Path temp = Files.createTempFile("saaf_csv_", ".csv");
@@ -485,6 +533,16 @@ public class AuroraBulkLoader {
             String jdbc = "jdbc:sqlite:" + sqlitePath;
             try (Connection conn = DriverManager.getConnection(jdbc)) {
                 conn.setAutoCommit(false);
+
+                // Optional: prune (delete all rows from) the table before inserting
+                if (pruneTable) {
+                    String pruneTableSql = "DELETE FROM " + sqliteTable + ";";
+                    try (Statement st = conn.createStatement()) {
+                        st.execute(pruneTableSql);
+                        conn.commit();
+                        System.out.println("Pruned SQLite table: " + sqliteTable);
+                    }
+                }
 
                 // Create table with TEXT columns
                 StringBuilder create = new StringBuilder();
@@ -642,6 +700,19 @@ public class AuroraBulkLoader {
             if (!targetSqlite && a != null && a.toString().equalsIgnoreCase("sqlite"))
                 targetSqlite = true;
 
+            // Extract pruning flags from event (optional; default to false)
+            boolean pruneTargetTable = true;
+            Object pruneTarget = detail.get("pruneTargetTable");
+            if (pruneTarget != null) {
+                pruneTargetTable = Boolean.parseBoolean(pruneTarget.toString());
+            }
+
+            boolean pruneTable = false;
+            Object prune = detail.get("pruneTable");
+            if (prune != null) {
+                pruneTable = Boolean.parseBoolean(prune.toString());
+            }
+
             if (!targetSqlite && (dbResourceArn == null || dbSecretArn == null || database == null || table == null)) {
                 String msg = "Missing required environment variables: DB_RESOURCE_ARN, DB_SECRET_ARN, DATABASE, TABLE";
                 context.getLogger().log(msg);
@@ -666,9 +737,10 @@ public class AuroraBulkLoader {
                     String sqliteTable = System.getenv("SQLITE_TABLE");
                     if (sqliteTable == null || sqliteTable.isEmpty())
                         sqliteTable = "listings_sqlite";
-                    loadS3ToSqlite(s3Bucket, s3Key, region, sqlitePath, sqliteTable);
+                    loadS3ToSqlite(s3Bucket, s3Key, region, sqlitePath, sqliteTable, pruneTable);
                 } else {
-                    executeLoadFromS3(s3Bucket, s3Key, region, dbResourceArn, dbSecretArn, database, table);
+                    executeLoadFromS3(s3Bucket, s3Key, region, dbResourceArn, dbSecretArn, database, table,
+                            pruneTargetTable);
                 }
             } catch (Exception e) {
                 context.getLogger().log("Error processing load: " + e.getMessage());
@@ -747,8 +819,15 @@ public class AuroraBulkLoader {
             if (sqliteTable == null || sqliteTable.isEmpty())
                 sqliteTable = "listings_sqlite";
 
+            // Extract pruning flag from event (optional; default to false)
+            boolean pruneTable = false;
+            Object prune = detail.get("pruneTable");
+            if (prune != null) {
+                pruneTable = Boolean.parseBoolean(prune.toString());
+            }
+
             try {
-                loadS3ToSqlite(s3Bucket, s3Key, region, sqlitePath, sqliteTable);
+                loadS3ToSqlite(s3Bucket, s3Key, region, sqlitePath, sqliteTable, pruneTable);
             } catch (Exception e) {
                 context.getLogger().log("Error loading to sqlite: " + e.getMessage());
                 throw new RuntimeException(e);
